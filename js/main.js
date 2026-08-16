@@ -6314,6 +6314,11 @@ function exportProjectBtnHidden() {
 // ── GrowerSite fork addition (round-trip): after an STL export, stash the
 // resulting mesh in IndexedDB so the configurator can pick it up when the
 // user returns to the tower tab. Keyed by the ?line= + ?module= query params.
+// Also records a full settings snapshot (so the order can be reproduced) and
+// uploads the textured STL + settings to the site's server immediately (so
+// the model is retained even if the browser data is later cleared, and
+// abandoned carts are captured). The upload is fire-and-forget: the tool's
+// UI never waits on it.
 function _stashRoundTrip(geo, baseName, texLabel) {
   try {
     const _p = new URLSearchParams(location.search);
@@ -6321,6 +6326,7 @@ function _stashRoundTrip(geo, baseName, texLabel) {
     const _line = _p.get('line');
     if (!_module || !_line) return;
     const _bytes = _geometryToBinarySTL(geo, false);
+    const _settingsSnap = _snapshotTextureSettings();
     const _dbReq = indexedDB.open('grower-texture', 1);
     _dbReq.onupgradeneeded = () => {
       if (!_dbReq.result.objectStoreNames.contains('textures')) {
@@ -6336,6 +6342,7 @@ function _stashRoundTrip(geo, baseName, texLabel) {
           stl: _bytes.buffer.slice(_bytes.byteOffset, _bytes.byteOffset + _bytes.byteLength),
           name: baseName,
           texture: texLabel || '',
+          settings: _settingsSnap,
           savedAt: Date.now(),
         }, `${_line}:${_module}`);
         _putReq.onsuccess = () => console.info(`[fork] stashed ${_line}:${_module} (${_bytes.byteLength} bytes, ${texLabel})`);
@@ -6343,7 +6350,67 @@ function _stashRoundTrip(geo, baseName, texLabel) {
         _tx.oncomplete = () => _db.close();
       } catch (_e) { console.warn('[fork] stash tx error', _e); }
     };
+    // Server retention (abandoned carts + survives browser-data clearing).
+    _uploadAppliedTexture(_module, _line, baseName, texLabel, _settingsSnap, _bytes);
   } catch (_e) { console.warn('[fork] stash error', _e); }
+}
+
+// Snapshot the texture settings for order documentation / reproducibility.
+// The settings object holds plain numbers/bools/null, so a JSON clone is safe.
+function _snapshotTextureSettings() {
+  try {
+    const s = JSON.parse(JSON.stringify(settings));
+    s.map = activeMapEntry ? (activeMapEntry.name || activeMapEntry.id || null) : null;
+    s.mapCustom = activeMapEntry ? !!activeMapEntry.isCustom : false;
+    return s;
+  } catch (_e) { return null; }
+}
+
+// POST the applied textured STL + settings to the site's server right away,
+// keyed by a persistent per-browser session id. At checkout the configurator
+// sends the same session id so the server merges these into the real order.
+function _uploadAppliedTexture(moduleId, line, baseName, texLabel, settingsSnap, bytes) {
+  try {
+    let sessionId = null;
+    try { sessionId = localStorage.getItem('growerSessionId'); } catch { /* ignore */ }
+    if (!sessionId) {
+      sessionId = 'gs-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+      try { localStorage.setItem('growerSessionId', sessionId); } catch { /* ignore */ }
+    }
+    const b64 = _arrayBufferToBase64(bytes);
+    fetch('/api/order-textures.php', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        orderId: sessionId,
+        sessionId,
+        productLine: line,
+        stack: [],
+        source: 'apply',
+        textures: [{
+          moduleId,
+          texture: texLabel || '',
+          name: baseName,
+          settings: settingsSnap,
+          stlBase64: b64,
+        }],
+      }),
+    }).then(r => r.json()).then(d => {
+      if (d && d.ok) console.info('[fork] applied texture uploaded (' + line + ':' + moduleId + ')');
+      else console.warn('[fork] apply upload rejected', d);
+    }).catch(e => console.warn('[fork] apply upload failed', e));
+  } catch (_e) { console.warn('[fork] apply upload error', _e); }
+}
+
+// Chunked base64 for large binary STLs (avoids call-stack limits).
+function _arrayBufferToBase64(buf) {
+  const bytes = new Uint8Array(buf);
+  let bin = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(bin);
 }
 
 // ── GrowerSite fork addition (no-download mode): the Export STL button runs

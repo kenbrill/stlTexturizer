@@ -39,6 +39,14 @@ All changes are clearly marked in `js/main.js` (search for
   (keyed by `?module=`/`?line=`) so the hosting configurator can pick it up
   when the user returns. Export-3MF, Save-project and sponsor download links
   are hidden.
+- **Order capture** — the IndexedDB stash also records a full snapshot of
+  the texture `settings` (projection mode, scale, amplitude, smoothing,
+  regularize flags, etc.) so any order can be reproduced or documented. And
+  on every Apply the textured STL + settings are POSTed to the site's own
+  `/api/order-textures.php` under a persistent per-browser session id
+  (localStorage `growerSessionId`), so abandoned carts and textures survive
+  a cleared IndexedDB. The configurator sends the same session id at
+  checkout and the server merges the session's uploads into the real order.
 
 Everything else is unmodified upstream code. To regenerate the diff against
 upstream: clone the repo at the pinned commit and diff `js/main.js`.
