@@ -13,7 +13,7 @@ the modules they configure, without any data leaving their browser.
 All changes are clearly marked in `js/main.js` (search for
 `GrowerSite fork addition`):
 
-- `?stl=<same-origin url>[&maskBottom=<mm>][&maskInner=<mm>][&maskTubes=<n>]`
+- `?stl=<same-origin url>[&maskBottom=<mm>][&maskInner=<mm>][&maskTubes=<n>][&maskTubeBore=<mm>]`
   — auto-loads the given STL and pre-excludes faces: (a) every face within
   `<mm>` of the model's bottom (the stacking slip fitting); (b) every face
   whose centroid is within `<mm>` of the model's rotation axis (the body-bore
@@ -31,9 +31,12 @@ All changes are clearly marked in `js/main.js` (search for
   offsets to `getX()`, which treats its argument as a *vertex* index and
   multiplies by 3 internally — scrambling every vertex read and pulling the
   detected axes 10–17mm off the true tube axes (texture leaked into the
-  bores and could be masked off the exterior on one side). The masks are
-  saved with the project (`mask.json`) and can still be refined with the
-  built-in paint tools.
+  bores and could be masked off the exterior on one side). The bore radius
+  is `maskTubeBore` (default 27.35mm = the 2in cup seat); the configurator
+  passes 40.6 for the 3in modules and 20.7 for the 1.5in modules so the
+  cup-seat mask matches each module's cup size. The masks are saved with the
+  project (`mask.json`) and can still be refined with the built-in paint
+  tools.
 - **No-download mode** — the Export STL button runs the full texture
   pipeline but never downloads a file; the result is stashed in IndexedDB
   (keyed by `?module=`/`?line=`) so the hosting configurator can pick it up

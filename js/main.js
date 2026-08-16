@@ -6144,6 +6144,10 @@ _updateUndoButtons();
   const _maskMm = parseFloat(_params.get('maskBottom')) || 0;  // bottom slip-fit band
   const _innerMm = parseFloat(_params.get('maskInner')) || 0;  // interior bore + inverted funnel
   const _tubeCount = parseInt(_params.get('maskTubes'), 10) || 0;  // seedling-tube bores (cup seats)
+  // Bore radius of the seedling tubes in mm (bore/2 + 0.5mm margin), passed
+  // by the configurator so the cup-seat mask matches the module's cup size
+  // (2in default: 27.35; 3in: 40.6; 1.5in: 20.7).
+  const _tubeBore = parseFloat(_params.get('maskTubeBore')) || 27.35;
   try {
     const _res = await fetch(_stlUrl);
     if (!_res.ok) throw new Error('HTTP ' + _res.status);
@@ -6277,7 +6281,7 @@ _updateUndoButtons();
             const _nl2 = Math.hypot(_nx, _ny, _nz) || 1;
             _axes.push({ x: _sx / _n, y: _sy / _n, z: _sz / _n, dx: _nx / _nl2, dy: _ny / _nl2, dz: _nz / _nl2 });
           }
-          const _BORE = 27.35;   // 53.7mm bore / 2 + 0.5mm margin
+          const _BORE = _tubeBore;   // bore / 2 + 0.5mm margin (per cup size)
           let _nt = 0;
           for (let i = 0; i < _nF; i++) {
             const _px = _cents[i * 3], _py = _cents[i * 3 + 1], _pz = _cents[i * 3 + 2];
