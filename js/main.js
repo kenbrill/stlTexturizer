@@ -4841,6 +4841,7 @@ async function handleExport(format = 'stl') {
       await yieldFrame();
       if (exportToken !== myToken) return;
       exportSTL(finalGeometry, `${baseName}.stl`);
+      _stashRoundTrip(finalGeometry, baseName, texLabel);
     }
     exportSucceeded = true;
 
@@ -6163,3 +6164,36 @@ _updateUndoButtons();
     alert(t('alerts.importFailed', { msg: _err.message }));
   }
 })();
+
+// ── GrowerSite fork addition (round-trip): after an STL export, stash the
+// resulting mesh in IndexedDB so the configurator can pick it up when the
+// user returns to the tower tab. Keyed by the ?line= + ?module= query params.
+function _stashRoundTrip(geo, baseName, texLabel) {
+  try {
+    const _p = new URLSearchParams(location.search);
+    const _module = _p.get('module');
+    const _line = _p.get('line');
+    if (!_module || !_line) return;
+    const _bytes = _geometryToBinarySTL(geo, false);
+    const _dbReq = indexedDB.open('grower-texture', 1);
+    _dbReq.onupgradeneeded = () => {
+      if (!_dbReq.result.objectStoreNames.contains('textures')) {
+        _dbReq.result.createObjectStore('textures');
+      }
+    };
+    _dbReq.onsuccess = () => {
+      try {
+        const _db = _dbReq.result;
+        const _tx = _db.transaction('textures', 'readwrite');
+        _tx.objectStore('textures').put({
+          stl: _bytes.buffer.slice(_bytes.byteOffset, _bytes.byteOffset + _bytes.byteLength),
+          name: baseName,
+          texture: texLabel || '',
+          savedAt: Date.now(),
+        }, `${_line}:${_module}`);
+        _tx.oncomplete = () => _db.close();
+      } catch (_e) { /* non-fatal */ }
+    };
+    _dbReq.onerror = () => { /* non-fatal */ };
+  } catch (_e) { /* non-fatal */ }
+}
