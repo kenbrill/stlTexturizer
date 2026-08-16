@@ -1671,8 +1671,11 @@ function wireEvents() {
     closeBtn.onclick = dismiss;
     storeLink.onclick = () => setTimeout(dismiss, 150);
   };
-  exportBtn.addEventListener('click', () => startExport('stl'));
-  export3mfBtn.addEventListener('click', () => startExport('3mf'));
+  // GrowerSite fork: no downloads — the Export button applies the texture to
+  // the tower (IndexedDB stash) and the 3MF/Save actions are disabled.
+  exportBtn.addEventListener('click', () => _applyToTower());
+  export3mfBtn.addEventListener('click', () => _applyToTower());
+  exportProjectBtnHidden();
 
   // ── Advanced / Beta Features panel: collapse toggle + bake action ──
   advancedToggle.addEventListener('click', () => {
@@ -4835,12 +4838,14 @@ async function handleExport(format = 'stl') {
       setProgress(0.97, t('progress.writing3mf'));
       await yieldFrame();
       if (exportToken !== myToken) return;
-      export3MF(finalGeometry, `${baseName}.3mf`);
+      // GrowerSite fork: downloads disabled — same IndexedDB stash as STL.
+      _stashRoundTrip(finalGeometry, baseName, texLabel);
     } else {
       setProgress(0.97, t('progress.writingStl'));
       await yieldFrame();
       if (exportToken !== myToken) return;
-      exportSTL(finalGeometry, `${baseName}.stl`);
+      // GrowerSite fork: no file download — the mesh goes straight to the
+      // configurator's IndexedDB store (and the order-capture at checkout).
       _stashRoundTrip(finalGeometry, baseName, texLabel);
     }
     exportSucceeded = true;
@@ -6121,42 +6126,60 @@ _updateUndoButtons();
 
 // ═══════════════════════════════════════════════════════════════════════
 // GrowerSite fork addition (upstream commit a6ac179149b8a17c71a9469dd4cb6f866c0c01d1)
-// ?stl=<same-origin url>[&maskBottom=<mm>] auto-loads a model and
-// pre-excludes every face within <mm> of its bottom — the stacking slip
-// fitting — so displacement texture can't be applied there. The mask rides
-// along in the exported .bumpmesh project (mask.json) and can still be
-// refined with the paint tools. See LICENSE (AGPL-3.0).
+// ?stl=<same-origin url>[&maskBottom=<mm>][&maskInner=<mm>] auto-loads a
+// model and pre-excludes faces: (a) every face within <mm> of its bottom —
+// the stacking slip fitting — and (b) every face whose centroid is within
+// <mm> of the model's Z axis — the body-bore interior, inverted funnel,
+// riser and support arms. The masks ride along in the exported .bumpmesh
+// project (mask.json) and can still be refined with the paint tools.
+// See LICENSE (AGPL-3.0).
 // ═══════════════════════════════════════════════════════════════════════
 (async () => {
   const _params = new URLSearchParams(location.search);
   const _stlUrl = _params.get('stl');
   if (!_stlUrl) return;
-  const _maskMm = parseFloat(_params.get('maskBottom')) || 0;
+  const _maskMm = parseFloat(_params.get('maskBottom')) || 0;  // bottom slip-fit band
+  const _innerMm = parseFloat(_params.get('maskInner')) || 0;  // interior bore + inverted funnel
   try {
     const _res = await fetch(_stlUrl);
     if (!_res.ok) throw new Error('HTTP ' + _res.status);
     const _blob = await _res.blob();
     const _name = _stlUrl.split('/').pop() || 'model.stl';
     await handleModelFile(new File([_blob], _name, { type: 'application/octet-stream' }));
-    if (_maskMm > 0 && currentGeometry) {
+    if ((_maskMm > 0 || _innerMm > 0) && currentGeometry) {
       const _pos = currentGeometry.attributes.position;
       if (_pos) {
         // Our STLs export Z-up and the tool does not rotate on load, so the
-        // bottom is min Z. Exclude faces whose centroid sits below the cut.
+        // bottom is min Z. The tool centres the mesh by its bbox centre and
+        // records that shift in currentPoseTrans, so the model's own origin
+        // (its rotation axis) sits at currentPoseTrans in this frame — the
+        // centred geometry's own bbox centre is (0,0), so it can't be used.
+        // Exclude faces whose centroid sits below the cut, plus (maskInner)
+        // faces whose centroid sits inside the body bore (interior wall,
+        // inverted funnel, riser, support arms).
+        const _axisX = currentPoseTrans ? currentPoseTrans.x : 0;
+        const _axisY = currentPoseTrans ? currentPoseTrans.y : 0;
         let _minZ = Infinity;
         for (let i = 0; i < _pos.count; i++) {
           const _z = _pos.getZ(i);
           if (_z < _minZ) _minZ = _z;
         }
         const _cut = _minZ + _maskMm;
-        let _n = 0;
+        let _n = 0, _ni = 0;
         for (let i = 0; i + 2 < _pos.count; i += 3) {
           const _cz = (_pos.getZ(i) + _pos.getZ(i + 1) + _pos.getZ(i + 2)) / 3;
-          if (_cz < _cut) { excludedFaces.add(i / 3); _n++; }
+          if (_maskMm > 0 && _cz < _cut) { excludedFaces.add(i / 3); _n++; }
+          if (_innerMm > 0) {
+            const _cx = (_pos.getX(i) + _pos.getX(i + 1) + _pos.getX(i + 2)) / 3;
+            const _cy = (_pos.getY(i) + _pos.getY(i + 1) + _pos.getY(i + 2)) / 3;
+            const _drx = _cx - _axisX, _dry = _cy - _axisY;
+            if (Math.sqrt(_drx * _drx + _dry * _dry) < _innerMm) { excludedFaces.add(i / 3); _ni++; }
+          }
         }
-        if (_n > 0) {
+        if (_n > 0 || _ni > 0) {
           refreshExclusionOverlay();
-          console.log('[texturizer] excluded ' + _n + ' faces below z=' + _cut.toFixed(1) + ' (' + _maskMm + 'mm mask)');
+          if (_n > 0) console.log('[texturizer] excluded ' + _n + ' faces below z=' + _cut.toFixed(1) + ' (' + _maskMm + 'mm bottom mask)');
+          if (_ni > 0) console.log('[texturizer] excluded ' + _ni + ' faces inside r=' + _innerMm + 'mm (interior/funnel mask)');
         }
       }
     }
@@ -6164,6 +6187,16 @@ _updateUndoButtons();
     alert(t('alerts.importFailed', { msg: _err.message }));
   }
 })();
+
+// GrowerSite fork: hide every download entry point (Save project, Export 3MF).
+function exportProjectBtnHidden() {
+  try {
+    const _save = document.getElementById('export-project-btn');
+    const _three = document.getElementById('export-3mf-btn');
+    if (_save) _save.style.display = 'none';
+    if (_three) _three.style.display = 'none';
+  } catch (_e) { /* non-fatal */ }
+}
 
 // ── GrowerSite fork addition (round-trip): after an STL export, stash the
 // resulting mesh in IndexedDB so the configurator can pick it up when the
@@ -6181,19 +6214,41 @@ function _stashRoundTrip(geo, baseName, texLabel) {
         _dbReq.result.createObjectStore('textures');
       }
     };
+    _dbReq.onerror = () => { console.warn('[fork] stash open error', _dbReq.error); };
     _dbReq.onsuccess = () => {
       try {
         const _db = _dbReq.result;
         const _tx = _db.transaction('textures', 'readwrite');
-        _tx.objectStore('textures').put({
+        const _putReq = _tx.objectStore('textures').put({
           stl: _bytes.buffer.slice(_bytes.byteOffset, _bytes.byteOffset + _bytes.byteLength),
           name: baseName,
           texture: texLabel || '',
           savedAt: Date.now(),
         }, `${_line}:${_module}`);
+        _putReq.onsuccess = () => console.info(`[fork] stashed ${_line}:${_module} (${_bytes.byteLength} bytes, ${texLabel})`);
+        _putReq.onerror = () => console.warn('[fork] stash put error', _putReq.error);
         _tx.oncomplete = () => _db.close();
-      } catch (_e) { /* non-fatal */ }
+      } catch (_e) { console.warn('[fork] stash tx error', _e); }
     };
-    _dbReq.onerror = () => { /* non-fatal */ };
-  } catch (_e) { /* non-fatal */ }
+  } catch (_e) { console.warn('[fork] stash error', _e); }
+}
+
+// ── GrowerSite fork addition (no-download mode): the Export STL button runs
+// the full texture pipeline but never downloads a file — the result is stored
+// in IndexedDB for the configurator round-trip. Without ?module=/?line= the
+// button just explains that models stay on the site.
+async function _applyToTower() {
+  const _p = new URLSearchParams(location.search);
+  const _module = _p.get('module');
+  const _line = _p.get('line');
+  if (!_module || !_line) {
+    alert('This texture tool runs inside the Grower Tower configurator — models stay on the website.');
+    return;
+  }
+  try {
+    await handleExport('stl');
+    alert('✓ Texture applied to your tower! Switch back to the configurator tab to see it.');
+  } catch (_err) {
+    alert(t('alerts.exportFailed', { msg: _err.message }));
+  }
 }

@@ -10,15 +10,23 @@ the modules they configure, without any data leaving their browser.
 
 ## Fork modifications
 
-One addition, clearly marked in `js/main.js` (search for
+All changes are clearly marked in `js/main.js` (search for
 `GrowerSite fork addition`):
 
-- `?stl=<same-origin url>[&maskBottom=<mm>]` — when the app is opened with
-  these query params it auto-loads the given STL and pre-excludes every face
-  within `<mm>` of the model's bottom (the stacking slip fitting), so
-  displacement texture cannot be applied to the slip fit. The mask is saved
-  with the project (`mask.json`) and can still be refined with the built-in
-  paint tools.
+- `?stl=<same-origin url>[&maskBottom=<mm>][&maskInner=<mm>]` — auto-loads
+  the given STL and pre-excludes faces: (a) every face within `<mm>` of the
+  model's bottom (the stacking slip fitting), and (b) every face whose
+  centroid is within `<mm>` of the model's rotation axis (the body-bore
+  interior, inverted-funnel diverter, riser and support arms). The axis is
+  recovered from the tool's own `currentPoseTrans` (the mesh is centred on
+  load, so the model origin lands there). The masks are saved with the
+  project (`mask.json`) and can still be refined with the built-in paint
+  tools.
+- **No-download mode** — the Export STL button runs the full texture
+  pipeline but never downloads a file; the result is stashed in IndexedDB
+  (keyed by `?module=`/`?line=`) so the hosting configurator can pick it up
+  when the user returns. Export-3MF, Save-project and sponsor download links
+  are hidden.
 
 Everything else is unmodified upstream code. To regenerate the diff against
 upstream: clone the repo at the pinned commit and diff `js/main.js`.
