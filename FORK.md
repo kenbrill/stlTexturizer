@@ -47,6 +47,12 @@ All changes are clearly marked in `js/main.js` (search for
   (localStorage `growerSessionId`), so abandoned carts and textures survive
   a cleared IndexedDB. The configurator sends the same session id at
   checkout and the server merges the session's uploads into the real order.
+- **Apply closes the tab** — instead of a success alert, Apply waits for the
+  IndexedDB stash and the server upload to settle (bounded to 10s), then
+  calls `window.close()`. The tool is always opened via the configurator's
+  `target="_blank"` link, so the close is permitted; the configurator
+  already re-reads its IndexedDB store on window focus, so the user lands
+  back on their tower with the texture applied — no alert, no extra click.
 
 Everything else is unmodified upstream code. To regenerate the diff against
 upstream: clone the repo at the pinned commit and diff `js/main.js`.

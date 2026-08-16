@@ -4839,14 +4839,14 @@ async function handleExport(format = 'stl') {
       await yieldFrame();
       if (exportToken !== myToken) return;
       // GrowerSite fork: downloads disabled — same IndexedDB stash as STL.
-      _stashRoundTrip(finalGeometry, baseName, texLabel);
+      _pendingRoundTrip = _stashRoundTrip(finalGeometry, baseName, texLabel);
     } else {
       setProgress(0.97, t('progress.writingStl'));
       await yieldFrame();
       if (exportToken !== myToken) return;
       // GrowerSite fork: no file download — the mesh goes straight to the
       // configurator's IndexedDB store (and the order-capture at checkout).
-      _stashRoundTrip(finalGeometry, baseName, texLabel);
+      _pendingRoundTrip = _stashRoundTrip(finalGeometry, baseName, texLabel);
     }
     exportSucceeded = true;
 
@@ -6317,42 +6317,51 @@ function exportProjectBtnHidden() {
 // Also records a full settings snapshot (so the order can be reproduced) and
 // uploads the textured STL + settings to the site's server immediately (so
 // the model is retained even if the browser data is later cleared, and
-// abandoned carts are captured). The upload is fire-and-forget: the tool's
-// UI never waits on it.
+// abandoned carts are captured). Returns a promise that resolves when both
+// the IndexedDB put and the server upload have settled — callers that are
+// about to close the tab (the Apply-to-tower flow) await it so the round
+// trip is not cut off.
 function _stashRoundTrip(geo, baseName, texLabel) {
   try {
     const _p = new URLSearchParams(location.search);
     const _module = _p.get('module');
     const _line = _p.get('line');
-    if (!_module || !_line) return;
+    if (!_module || !_line) return Promise.resolve();
     const _bytes = _geometryToBinarySTL(geo, false);
     const _settingsSnap = _snapshotTextureSettings();
-    const _dbReq = indexedDB.open('grower-texture', 1);
-    _dbReq.onupgradeneeded = () => {
-      if (!_dbReq.result.objectStoreNames.contains('textures')) {
-        _dbReq.result.createObjectStore('textures');
-      }
-    };
-    _dbReq.onerror = () => { console.warn('[fork] stash open error', _dbReq.error); };
-    _dbReq.onsuccess = () => {
-      try {
-        const _db = _dbReq.result;
-        const _tx = _db.transaction('textures', 'readwrite');
-        const _putReq = _tx.objectStore('textures').put({
-          stl: _bytes.buffer.slice(_bytes.byteOffset, _bytes.byteOffset + _bytes.byteLength),
-          name: baseName,
-          texture: texLabel || '',
-          settings: _settingsSnap,
-          savedAt: Date.now(),
-        }, `${_line}:${_module}`);
-        _putReq.onsuccess = () => console.info(`[fork] stashed ${_line}:${_module} (${_bytes.byteLength} bytes, ${texLabel})`);
-        _putReq.onerror = () => console.warn('[fork] stash put error', _putReq.error);
-        _tx.oncomplete = () => _db.close();
-      } catch (_e) { console.warn('[fork] stash tx error', _e); }
-    };
+    const _idbDone = new Promise((_resolve) => {
+      const _dbReq = indexedDB.open('grower-texture', 1);
+      _dbReq.onupgradeneeded = () => {
+        if (!_dbReq.result.objectStoreNames.contains('textures')) {
+          _dbReq.result.createObjectStore('textures');
+        }
+      };
+      _dbReq.onerror = () => { console.warn('[fork] stash open error', _dbReq.error); _resolve(); };
+      _dbReq.onsuccess = () => {
+        try {
+          const _db = _dbReq.result;
+          const _tx = _db.transaction('textures', 'readwrite');
+          const _putReq = _tx.objectStore('textures').put({
+            stl: _bytes.buffer.slice(_bytes.byteOffset, _bytes.byteOffset + _bytes.byteLength),
+            name: baseName,
+            texture: texLabel || '',
+            settings: _settingsSnap,
+            savedAt: Date.now(),
+          }, `${_line}:${_module}`);
+          _putReq.onsuccess = () => console.info(`[fork] stashed ${_line}:${_module} (${_bytes.byteLength} bytes, ${texLabel})`);
+          _putReq.onerror = () => console.warn('[fork] stash put error', _putReq.error);
+          _tx.oncomplete = () => { _db.close(); _resolve(); };
+          _tx.onerror = () => { _resolve(); };
+        } catch (_e) { console.warn('[fork] stash tx error', _e); _resolve(); }
+      };
+    });
     // Server retention (abandoned carts + survives browser-data clearing).
-    _uploadAppliedTexture(_module, _line, baseName, texLabel, _settingsSnap, _bytes);
-  } catch (_e) { console.warn('[fork] stash error', _e); }
+    const _upP = _uploadAppliedTexture(_module, _line, baseName, texLabel, _settingsSnap, _bytes);
+    return Promise.all([_idbDone, _upP]).catch(() => {});
+  } catch (_e) {
+    console.warn('[fork] stash error', _e);
+    return Promise.resolve();
+  }
 }
 
 // Snapshot the texture settings for order documentation / reproducibility.
@@ -6378,7 +6387,7 @@ function _uploadAppliedTexture(moduleId, line, baseName, texLabel, settingsSnap,
       try { localStorage.setItem('growerSessionId', sessionId); } catch { /* ignore */ }
     }
     const b64 = _arrayBufferToBase64(bytes);
-    fetch('/api/order-textures.php', {
+    return fetch('/api/order-textures.php', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -6398,8 +6407,15 @@ function _uploadAppliedTexture(moduleId, line, baseName, texLabel, settingsSnap,
     }).then(r => r.json()).then(d => {
       if (d && d.ok) console.info('[fork] applied texture uploaded (' + line + ':' + moduleId + ')');
       else console.warn('[fork] apply upload rejected', d);
-    }).catch(e => console.warn('[fork] apply upload failed', e));
-  } catch (_e) { console.warn('[fork] apply upload error', _e); }
+      return d;
+    }).catch(e => {
+      console.warn('[fork] apply upload failed', e);
+      return null;
+    });
+  } catch (_e) {
+    console.warn('[fork] apply upload error', _e);
+    return Promise.resolve();
+  }
 }
 
 // Chunked base64 for large binary STLs (avoids call-stack limits).
@@ -6417,6 +6433,9 @@ function _arrayBufferToBase64(buf) {
 // the full texture pipeline but never downloads a file — the result is stored
 // in IndexedDB for the configurator round-trip. Without ?module=/?line= the
 // button just explains that models stay on the site.
+// The last stash promise (IndexedDB put + server upload), set by handleExport.
+let _pendingRoundTrip = Promise.resolve();
+
 async function _applyToTower() {
   const _p = new URLSearchParams(location.search);
   const _module = _p.get('module');
@@ -6427,7 +6446,15 @@ async function _applyToTower() {
   }
   try {
     await handleExport('stl');
-    alert('✓ Texture applied to your tower! Switch back to the configurator tab to see it.');
+    // Wait for the IndexedDB stash + server upload to settle (bounded), so
+    // closing the tab doesn't cut them off — then close: the configurator
+    // picks up the texture on window focus, so the user lands back on their
+    // tower with the texture already applied.
+    await Promise.race([
+      Promise.resolve(_pendingRoundTrip),
+      new Promise(r => setTimeout(r, 10000)),
+    ]);
+    window.close();
   } catch (_err) {
     alert(t('alerts.exportFailed', { msg: _err.message }));
   }
