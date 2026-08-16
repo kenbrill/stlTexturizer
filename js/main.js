@@ -6126,12 +6126,15 @@ _updateUndoButtons();
 
 // ═══════════════════════════════════════════════════════════════════════
 // GrowerSite fork addition (upstream commit a6ac179149b8a17c71a9469dd4cb6f866c0c01d1)
-// ?stl=<same-origin url>[&maskBottom=<mm>][&maskInner=<mm>] auto-loads a
-// model and pre-excludes faces: (a) every face within <mm> of its bottom —
-// the stacking slip fitting — and (b) every face whose centroid is within
-// <mm> of the model's Z axis — the body-bore interior, inverted funnel,
-// riser and support arms. The masks ride along in the exported .bumpmesh
-// project (mask.json) and can still be refined with the paint tools.
+// ?stl=<same-origin url>[&maskBottom=<mm>][&maskInner=<mm>][&maskTubes=<n>]
+// auto-loads a model and pre-excludes faces: (a) every face within <mm> of
+// its bottom — the stacking slip fitting — (b) every face whose centroid is
+// within <mm> of the model's Z axis — the body-bore interior, inverted
+// funnel, riser and support arms — and (c) with maskTubes=<n>, every face
+// inside the <n> seedling-tube bores (the grow-cup seats), whose axes are
+// detected from the mesh itself (the flat tip caps point exactly along each
+// tube axis). The masks ride along in the exported .bumpmesh project
+// (mask.json) and can still be refined with the paint tools.
 // See LICENSE (AGPL-3.0).
 // ═══════════════════════════════════════════════════════════════════════
 (async () => {
@@ -6140,6 +6143,7 @@ _updateUndoButtons();
   if (!_stlUrl) return;
   const _maskMm = parseFloat(_params.get('maskBottom')) || 0;  // bottom slip-fit band
   const _innerMm = parseFloat(_params.get('maskInner')) || 0;  // interior bore + inverted funnel
+  const _tubeCount = parseInt(_params.get('maskTubes'), 10) || 0;  // seedling-tube bores (cup seats)
   try {
     const _res = await fetch(_stlUrl);
     if (!_res.ok) throw new Error('HTTP ' + _res.status);
@@ -6180,6 +6184,111 @@ _updateUndoButtons();
           refreshExclusionOverlay();
           if (_n > 0) console.log('[texturizer] excluded ' + _n + ' faces below z=' + _cut.toFixed(1) + ' (' + _maskMm + 'mm bottom mask)');
           if (_ni > 0) console.log('[texturizer] excluded ' + _ni + ' faces inside r=' + _innerMm + 'mm (interior/funnel mask)');
+        }
+      }
+    }
+
+    // ── Tube-bore mask (maskTubes=<n>): the seedling tubes' inner walls are
+    // where the grow cups seat, so they stay untextured too. Each tube's axis
+    // is detected from the mesh: the flat tip cap of every tube is a disk
+    // perpendicular to the axis, so its face normals point exactly along the
+    // tube axis (outward + up at 55/60 deg — the only faces with that
+    // z-component; the funnels' cones are steeper). Then exclude every face
+    // within the bore radius of any detected axis. The bore ID is 53.7mm for
+    // both formats (bore radius 26.85 + 0.5mm margin).
+    if (_tubeCount > 0 && currentGeometry) {
+      const _pos2 = currentGeometry.attributes.position;
+      if (_pos2) {
+        const _nF = Math.floor(_pos2.count / 3);
+        const _cents = new Float64Array(_nF * 3);
+        const _norms = new Float64Array(_nF * 3);
+        for (let i = 0; i < _nF; i++) {
+          const o = i * 9;
+          const _ax = _pos2.getX(o), _ay = _pos2.getY(o), _az = _pos2.getZ(o);
+          const _bx = _pos2.getX(o + 1), _by = _pos2.getY(o + 1), _bz = _pos2.getZ(o + 1);
+          const _cx = _pos2.getX(o + 2), _cy = _pos2.getY(o + 2), _cz = _pos2.getZ(o + 2);
+          _cents[i * 3] = (_ax + _bx + _cx) / 3; _cents[i * 3 + 1] = (_ay + _by + _cy) / 3; _cents[i * 3 + 2] = (_az + _bz + _cz) / 3;
+          const _ux = _bx - _ax, _uy = _by - _ay, _uz = _bz - _az;
+          const _vx = _cx - _ax, _vy = _cy - _ay, _vz = _cz - _az;
+          let _nx = _uy * _vz - _uz * _vy, _ny = _uz * _vx - _ux * _vz, _nz = _ux * _vy - _uy * _vx;
+          const _nl = Math.hypot(_nx, _ny, _nz) || 1;
+          _norms[i * 3] = _nx / _nl; _norms[i * 3 + 1] = _ny / _nl; _norms[i * 3 + 2] = _nz / _nl;
+        }
+        const _ax0 = currentPoseTrans ? currentPoseTrans.x : 0;
+        const _ay0 = currentPoseTrans ? currentPoseTrans.y : 0;
+        // Detect tip caps: outward radial normal component > 0.7 and a
+        // z-component in (0.45, 0.61) — matches 55/60-deg tube axes only.
+        const _caps = [];
+        for (let i = 0; i < _nF; i++) {
+          const o = i * 3;
+          const _dx = _cents[o] - _ax0, _dy = _cents[o + 1] - _ay0;
+          const _r = Math.hypot(_dx, _dy) || 1;
+          const _nr = (_norms[o] * _dx + _norms[o + 1] * _dy) / _r;
+          if (_nr > 0.7 && _norms[o + 2] > 0.45 && _norms[o + 2] < 0.61) _caps.push(i);
+        }
+        if (_caps.length >= _tubeCount) {
+          // k-means into _tubeCount clusters (init: azimuth-sorted groups).
+          const _azis = _caps.map(i => Math.atan2(_cents[i * 3 + 1] - _ay0, _cents[i * 3] - _ax0));
+          const _order = _caps.map((_, j) => j).sort((a, b) => _azis[a] - _azis[b]);
+          const _seeds = [];
+          for (let k = 0; k < _tubeCount; k++) {
+            const _a = Math.round(k * _caps.length / _tubeCount);
+            const _b = Math.round((k + 1) * _caps.length / _tubeCount);
+            let _sx = 0, _sy = 0, _sz = 0;
+            for (let j = _a; j < _b; j++) { const i = _caps[_order[j]]; _sx += _cents[i * 3]; _sy += _cents[i * 3 + 1]; _sz += _cents[i * 3 + 2]; }
+            _seeds.push([_sx / (_b - _a || 1), _sy / (_b - _a || 1), _sz / (_b - _a || 1)]);
+          }
+          const _assign = new Int32Array(_caps.length);
+          for (let _it = 0; _it < 20; _it++) {
+            for (let j = 0; j < _caps.length; j++) {
+              const i = _caps[j];
+              let _best = Infinity, _bk = 0;
+              for (let k = 0; k < _tubeCount; k++) {
+                const _d = (_cents[i * 3] - _seeds[k][0]) ** 2 + (_cents[i * 3 + 1] - _seeds[k][1]) ** 2 + (_cents[i * 3 + 2] - _seeds[k][2]) ** 2;
+                if (_d < _best) { _best = _d; _bk = k; }
+              }
+              _assign[j] = _bk;
+            }
+            const _sums = Array.from({ length: _tubeCount }, () => [0, 0, 0, 0]);
+            for (let j = 0; j < _caps.length; j++) {
+              const i = _caps[j], k = _assign[j];
+              _sums[k][0] += _cents[i * 3]; _sums[k][1] += _cents[i * 3 + 1]; _sums[k][2] += _cents[i * 3 + 2]; _sums[k][3]++;
+            }
+            for (let k = 0; k < _tubeCount; k++) {
+              if (_sums[k][3] > 0) _seeds[k] = [_sums[k][0] / _sums[k][3], _sums[k][1] / _sums[k][3], _sums[k][2] / _sums[k][3]];
+            }
+          }
+          // Per-cluster axis: centroid + average normal.
+          const _axes = [];
+          for (let k = 0; k < _tubeCount; k++) {
+            let _sx = 0, _sy = 0, _sz = 0, _nx = 0, _ny = 0, _nz = 0, _n = 0;
+            for (let j = 0; j < _caps.length; j++) {
+              if (_assign[j] !== k) continue;
+              const i = _caps[j];
+              _sx += _cents[i * 3]; _sy += _cents[i * 3 + 1]; _sz += _cents[i * 3 + 2];
+              _nx += _norms[i * 3]; _ny += _norms[i * 3 + 1]; _nz += _norms[i * 3 + 2];
+              _n++;
+            }
+            if (_n === 0) continue;
+            const _nl2 = Math.hypot(_nx, _ny, _nz) || 1;
+            _axes.push({ x: _sx / _n, y: _sy / _n, z: _sz / _n, dx: _nx / _nl2, dy: _ny / _nl2, dz: _nz / _nl2 });
+          }
+          const _BORE = 27.35;   // 53.7mm bore / 2 + 0.5mm margin
+          let _nt = 0;
+          for (let i = 0; i < _nF; i++) {
+            const _px = _cents[i * 3], _py = _cents[i * 3 + 1], _pz = _cents[i * 3 + 2];
+            for (const _ax of _axes) {
+              const _qx = _px - _ax.x, _qy = _py - _ax.y, _qz = _pz - _ax.z;
+              const _d = Math.hypot(_qy * _ax.dz - _qz * _ax.dy, _qz * _ax.dx - _qx * _ax.dz, _qx * _ax.dy - _qy * _ax.dx);
+              if (_d < _BORE) { excludedFaces.add(i); _nt++; break; }
+            }
+          }
+          if (_nt > 0) {
+            refreshExclusionOverlay();
+            console.log('[texturizer] excluded ' + _nt + ' faces inside ' + _axes.length + ' tube bores (cup-seat mask)');
+          }
+        } else {
+          console.warn('[texturizer] tube-bore mask skipped: detected ' + _caps.length + ' tip caps for ' + _tubeCount + ' tubes');
         }
       }
     }
