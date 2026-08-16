@@ -6200,13 +6200,17 @@ _updateUndoButtons();
       const _pos2 = currentGeometry.attributes.position;
       if (_pos2) {
         const _nF = Math.floor(_pos2.count / 3);
+        const _posArr = _pos2.array;
         const _cents = new Float64Array(_nF * 3);
         const _norms = new Float64Array(_nF * 3);
         for (let i = 0; i < _nF; i++) {
+          // Non-indexed geometry: face i owns raw floats [i*9 .. i*9+8] = 3
+          // vertices (x,y,z each). NOTE: use the raw array — getX(o) treats o
+          // as a VERTEX index (array[o*3]), which would scramble the reads.
           const o = i * 9;
-          const _ax = _pos2.getX(o), _ay = _pos2.getY(o), _az = _pos2.getZ(o);
-          const _bx = _pos2.getX(o + 1), _by = _pos2.getY(o + 1), _bz = _pos2.getZ(o + 1);
-          const _cx = _pos2.getX(o + 2), _cy = _pos2.getY(o + 2), _cz = _pos2.getZ(o + 2);
+          const _ax = _posArr[o],     _ay = _posArr[o + 1], _az = _posArr[o + 2];
+          const _bx = _posArr[o + 3], _by = _posArr[o + 4], _bz = _posArr[o + 5];
+          const _cx = _posArr[o + 6], _cy = _posArr[o + 7], _cz = _posArr[o + 8];
           _cents[i * 3] = (_ax + _bx + _cx) / 3; _cents[i * 3 + 1] = (_ay + _by + _cy) / 3; _cents[i * 3 + 2] = (_az + _bz + _cz) / 3;
           const _ux = _bx - _ax, _uy = _by - _ay, _uz = _bz - _az;
           const _vx = _cx - _ax, _vy = _cy - _ay, _vz = _cz - _az;

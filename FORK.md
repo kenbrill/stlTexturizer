@@ -25,8 +25,15 @@ All changes are clearly marked in `js/main.js` (search for
   disk perpendicular to the axis, so its face normals point exactly along the
   tube axis (outward+up at 55/60° — the only faces with that z-component; the
   funnel cones are steeper), and the caps are clustered with k-means (handles
-  the two-tier 6/10/12-tube layouts). The masks are saved with the project
-  (`mask.json`) and can still be refined with the built-in paint tools.
+  the two-tier 6/10/12-tube layouts). The tube-mask vertex reads use the raw
+  position array (a non-indexed BufferGeometry stores face *i*'s three
+  vertices at raw floats `[i*9..i*9+8]`); the earlier version passed those
+  offsets to `getX()`, which treats its argument as a *vertex* index and
+  multiplies by 3 internally — scrambling every vertex read and pulling the
+  detected axes 10–17mm off the true tube axes (texture leaked into the
+  bores and could be masked off the exterior on one side). The masks are
+  saved with the project (`mask.json`) and can still be refined with the
+  built-in paint tools.
 - **No-download mode** — the Export STL button runs the full texture
   pipeline but never downloads a file; the result is stashed in IndexedDB
   (keyed by `?module=`/`?line=`) so the hosting configurator can pick it up
